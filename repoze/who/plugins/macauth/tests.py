@@ -6,7 +6,6 @@ import unittest
 import time
 
 from webob import Request
-from webob.exc import HTTPNotFound
 from webtest import TestApp
 
 from zope.interface.verify import verifyClass
@@ -118,7 +117,7 @@ class TestMACAuthPlugin(unittest.TestCase):
             nonce_cache_nonce_timeout=42)
         self.assertTrue(isinstance(plugin.nonce_cache, macauthlib.NonceCache))
         self.assertEquals(plugin.nonce_cache.nonce_timeout, 42)
-        self.assertRaises(TypeError, make_plugin, 
+        self.assertRaises(TypeError, make_plugin,
             nonce_cache="macauthlib:NonceCache",
             nonce_cache_invalid_arg="WHAWHAWHAWHA")
 
@@ -180,7 +179,7 @@ class TestMACAuthPlugin(unittest.TestCase):
         creds = self._get_credentials(hello="world")
         req = Request.blank("/")
         macauthlib.sign_request(req, **creds)
-        r = self.app.request(req, status=401)
+        self.app.request(req, status=401)
 
     def test_authentication_with_non_mac_scheme_fails(self):
         req = Request.blank("/")

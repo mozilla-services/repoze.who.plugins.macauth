@@ -17,6 +17,8 @@ __ver_tuple__ = (__ver_major__, __ver_minor__, __ver_patch__, __ver_sub__)
 __version__ = "%d.%d.%d%s" % __ver_tuple__
 
 
+import functools
+
 from zope.interface import implements
 
 from webob import Request, Response
@@ -223,14 +225,11 @@ def _load_function_from_kwds(name, kwds):
     for key in kwds.keys():
         if key.startswith(prefix):
             func_kwds[key[len(prefix):]] = kwds.pop(key)
-    if not func_kwds:
-        return func
-    def wrapper_func(*args, **kwds):
-        for kwd in func_kwds:
-            if kwd not in kwds:
-                kwds[kwd] = func_kwds[kwd]
-        return func(*args, **kwds)
-    return wrapper_func
+    # Return the original function if not currying anything.
+    # This is both more effient and better for unit testing.
+    if func_kwds:
+        func = functools.partial(func, **func_kwds)
+    return func
 
 
 def _load_object_from_kwds(name, kwds):
