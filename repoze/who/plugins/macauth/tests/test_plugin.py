@@ -79,6 +79,11 @@ class StubTokenManager(TokenManager):
     """TokenManager subclass to test correct class loading."""
 
 
+def stub_tm_factory(request):
+    """Stub TokenManager factory that sets secret based on hostname."""
+    return StubTokenManager(secret=request.host)
+
+
 class TestMACAuthPlugin(unittest2.TestCase):
     """Testcases for the main MACAuthPlugin class."""
 
@@ -93,9 +98,12 @@ class TestMACAuthPlugin(unittest2.TestCase):
                                  stub_challenge_decider)
         self.app = TestApp(application)
 
-    def _get_credentials(self, **data):
-        token = self.plugin.token_manager.make_token(data)
-        secret = self.plugin.token_manager.get_token_secret(token)
+    def _get_credentials(self, request=None, **data):
+        if request is None:
+            request = Request.blank("/")
+        token_manager = self.plugin._get_token_manager(request)
+        token = token_manager.make_token(data)
+        secret = token_manager.get_token_secret(token)
         return {"token": token, "secret": secret}
 
     def test_implements(self):
@@ -107,8 +115,15 @@ class TestMACAuthPlugin(unittest2.TestCase):
         plugin = make_plugin(
             token_manager=dotted_name("StubTokenManager"),
             nonce_timeout=17,
-            token_timeout=42)
+            token_timeout="42")
         self.assertTrue(isinstance(plugin.token_manager, StubTokenManager))
+        self.assertEquals(plugin.nonce_timeout, 17)
+        self.assertEquals(plugin.token_timeout, 42)
+        plugin = make_plugin(
+            token_manager_factory=dotted_name("stub_tm_factory"),
+            nonce_timeout="17",
+            token_timeout=42)
+        self.assertEquals(plugin.token_manager_factory, stub_tm_factory)
         self.assertEquals(plugin.nonce_timeout, 17)
         self.assertEquals(plugin.token_timeout, 42)
 
@@ -134,8 +149,14 @@ class TestMACAuthPlugin(unittest2.TestCase):
     def test_make_plugin_produces_sensible_defaults(self):
         plugin = make_plugin()
         self.assertTrue(isinstance(plugin.token_manager, TokenManager))
+        self.assertEquals(plugin.token_manager_factory, None)
         self.assertEquals(plugin.nonce_timeout, 60)
         self.assertEquals(plugin.token_timeout, plugin.token_manager.timeout)
+
+    def test_cant_specify_both_manager_and_factory(self):
+        self.assertRaises(ValueError, MACAuthPlugin,
+                                      token_manager=TokenManager,
+                                      token_manager_factory=stub_tm_factory)
 
     def test_token_timeout_defaults_to_nonce_timeout(self):
         token_manager = TokenManager()
@@ -296,3 +317,24 @@ class TestMACAuthPlugin(unittest2.TestCase):
     def test_authenticate_only_accepts_mac_credentials(self):
         # Yes, this is a rather pointless test that boosts line coverage...
         self.assertEquals(self.plugin.authenticate(make_environ(), {}), None)
+
+    def test_token_manager_factory_can_separate_requests_by_host(self):
+        self.plugin.token_manager = None
+        self.plugin.token_manager_factory = stub_tm_factory
+        req1 = Request.blank("/", host="host1.moz.com")
+        creds1 = self._get_credentials(req1, username="test1@moz.com")
+        req2 = Request.blank("/", host="host2.moz.com")
+        creds2 = self._get_credentials(req2, username="test2@moz.com")
+        # Signing req1 with creds2 will not work.
+        sign_request(req1, **creds2)
+        self.app.request(req1, status=401)
+        # Signing req2 with creds1 will not work.
+        sign_request(req2, **creds1)
+        self.app.request(req2, status=401)
+        # But they work using creds for their own host.
+        sign_request(req1, **creds1)
+        resp = self.app.request(req1)
+        self.assertEquals(resp.body, "test1@moz.com")
+        sign_request(req2, **creds2)
+        resp = self.app.request(req2)
+        self.assertEquals(resp.body, "test2@moz.com")

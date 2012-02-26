@@ -95,7 +95,8 @@ def sign_request(request, token, secret):
 
     This function implements the client-side request signing algorithm as
     expected by the server, i.e. MAC access authentication as defined by
-    RFC-TODO.
+    RFC-TODO.  It takes a webob Request object and inserts the appropriate
+    signature into its Authorization header.
 
     It's not used by the repoze.who plugin itself, but is handy for testing
     purposes and possibly for python client libraries.

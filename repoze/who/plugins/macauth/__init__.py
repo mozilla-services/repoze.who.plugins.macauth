@@ -39,25 +39,34 @@ class MACAuthPlugin(object):
     requests using the MAC Access Authentication standard with pre-shared
     MAC credentials.
 
-    The class takes different parameters when instanciated:
+    The class takes the following parameters:
 
-    :param token_manager: the tokenlib.TokenManager class used to validate
-                          client MAC credentials.
-    :param nonce_timeout: the timeout after which nonces are removed from
-                          the cache; defaults to 60 seconds.
-    :param token_timeout: the timeout after which all nonce for a token are
-                          removed from the cache; defaults to nonce_timeout.
+      token_manager:  the tokenlib.TokenManager instance used to validate
+                      client MAC credentials.
+
+      token_manager_factory:  a callable selecting the tokenlib.TokenManager
+                              instance to use on a per-request basis.
+
+      nonce_timeout:  the timeout after which nonces are removed from
+                      the cache; defaults to 60 seconds.
+
+      token_timeout:  the timeout after which all nonce for a token are
+                      removed from the cache; defaults to nonce_timeout.
 
     """
 
     implements(IIdentifier, IChallenger, IAuthenticator)
 
-    def __init__(self, token_manager=None, nonce_timeout=None,
-                 token_timeout=None):
+    def __init__(self, token_manager=None, token_manager_factory=None,
+                 nonce_timeout=None, token_timeout=None):
+        # Sanity-check the arguments.
+        if token_manager is not None and token_manager_factory is not None:
+            msg = "Cannot specify both token_manager and token_manager_factory"
+            raise ValueError(msg)
         # Fill in default values for any unspecified arguments.
         # I'm not declaring defaults on the arguments themselves because
         # we would then have to duplicate those defaults into make_plugin.
-        if token_manager is None:
+        if token_manager is None and token_manager_factory is None:
             token_manager = tokenlib.TokenManager()
         if nonce_timeout is None:
             nonce_timeout = 60
@@ -67,9 +76,11 @@ class MACAuthPlugin(object):
             except AttributeError:
                 token_timeout = nonce_timeout
         self.token_manager = token_manager
+        self.token_manager_factory = token_manager_factory
         self.nonce_timeout = nonce_timeout
         self.token_timeout = token_timeout
         self.nonce_manager = NonceManager(nonce_timeout, token_timeout)
+        assert self.token_manager or self.token_manager_factory
 
     def identify(self, environ):
         """Extract the authentication info from the request.
@@ -135,10 +146,11 @@ class MACAuthPlugin(object):
         if identity.get("scheme") != "MAC":
             return None
         token = identity["id"]
-        # Decode the token and gets its associated secret.
+        # Decode the token and get its associated secret.
+        token_manager = self._get_token_manager(request)
         try:
-            data = self.token_manager.parse_token(token)
-            secret = self.token_manager.get_token_secret(token)
+            data = token_manager.parse_token(token)
+            secret = token_manager.get_token_secret(token)
         except ValueError:
             msg = "invalid MAC id"
             return self._respond_unauthorized(request, msg)
@@ -180,6 +192,13 @@ class MACAuthPlugin(object):
         """
         return [("WWW-Authenticate", "MAC")]
 
+    def _get_token_manager(self, request):
+        """Get the TokenManager to use for the given request."""
+        token_manager = self.token_manager
+        if token_manager is None:
+            token_manager = self.token_manager_factory(request)
+        return token_manager
+
     def _respond_unauthorized(self, request, message="Unauthorized"):
         """Generate a "401 Unauthorized" error response."""
         resp = Response()
@@ -191,7 +210,7 @@ class MACAuthPlugin(object):
         return None
 
 
-def make_plugin(nonce_timeout=None, token_timeout=None, **kwds):
+def make_plugin(**kwds):
     """Make a MACAuthPlugin using values from a .ini config file.
 
     This is a helper function for loading a MACAuthPlugin via the
@@ -199,9 +218,19 @@ def make_plugin(nonce_timeout=None, token_timeout=None, **kwds):
     strings to the appropriate type then passes them on to the plugin.
     """
     token_manager = _load_from_callable("token_manager", kwds)
+    token_manager_factory = kwds.pop("token_manager_factory", None)
+    if token_manager_factory is not None:
+        token_manager_factory = resolveDotted(token_manager_factory)
+    nonce_timeout = kwds.pop("nonce_timeout", None)
+    if nonce_timeout is not None:
+        nonce_timeout = int(nonce_timeout)
+    token_timeout = kwds.pop("token_timeout", None)
+    if token_timeout is not None:
+        token_timeout = int(token_timeout)
     for unknown_kwd in kwds:
         raise TypeError("unknown keyword argument: %s" % unknown_kwd)
-    plugin = MACAuthPlugin(token_manager, nonce_timeout, token_timeout)
+    plugin = MACAuthPlugin(token_manager, token_manager_factory,
+                           nonce_timeout, token_timeout)
     return plugin
 
 
