@@ -2,8 +2,7 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
 
-import unittest2
-import urllib2
+import unittest
 import time
 
 from webob import Request
@@ -15,10 +14,10 @@ from zope.interface.verify import verifyClass
 from repoze.who.interfaces import IIdentifier, IAuthenticator, IChallenger
 from repoze.who.middleware import PluggableAuthenticationMiddleware
 
-from tokenlib import TokenManager
+import macauthlib
+import tokenlib
 
 from repoze.who.plugins.macauth import MACAuthPlugin, make_plugin
-from repoze.who.plugins.macauth.utils import sign_request, parse_authz_header
 
 
 def make_environ(**kwds):
@@ -36,7 +35,7 @@ def make_environ(**kwds):
 
 def dotted_name(name):
     """Return full dotted name of something in this module."""
-    return "repoze.who.plugins.macauth.tests.test_plugin:" + name
+    return "repoze.who.plugins.macauth.tests:" + name
 
 
 def stub_application(environ, start_response):
@@ -75,20 +74,18 @@ def stub_challenge_decider(environ, status, headers):
     return status.split(None, 1)[0] in ("401", "403")
 
 
-class StubTokenManager(TokenManager):
-    """TokenManager subclass to test correct class loading."""
+def stub_decode_token(request, token, **extra):
+    """Stub token-decoding function that just returns the token itself."""
+    data = {"userid": token}
+    data.update(extra)
+    return token, data
 
 
-def stub_tm_factory(request):
-    """Stub TokenManager factory that sets secret based on hostname."""
-    return StubTokenManager(secret=request.host)
-
-
-class TestMACAuthPlugin(unittest2.TestCase):
+class TestMACAuthPlugin(unittest.TestCase):
     """Testcases for the main MACAuthPlugin class."""
 
     def setUp(self):
-        self.plugin = MACAuthPlugin(token_manager=StubTokenManager())
+        self.plugin = MACAuthPlugin()
         application = PluggableAuthenticationMiddleware(stub_application,
                                  [["mac", self.plugin]],
                                  [["mac", self.plugin]],
@@ -98,13 +95,10 @@ class TestMACAuthPlugin(unittest2.TestCase):
                                  stub_challenge_decider)
         self.app = TestApp(application)
 
-    def _get_credentials(self, request=None, **data):
-        if request is None:
-            request = Request.blank("/")
-        token_manager = self.plugin._get_token_manager(request)
-        token = token_manager.make_token(data)
-        secret = token_manager.get_token_secret(token)
-        return {"token": token, "secret": secret}
+    def _get_credentials(self, **data):
+        token = tokenlib.make_token(data)
+        secret = tokenlib.get_token_secret(token)
+        return {"id": token, "key": secret}
 
     def test_implements(self):
         verifyClass(IIdentifier, MACAuthPlugin)
@@ -113,29 +107,20 @@ class TestMACAuthPlugin(unittest2.TestCase):
 
     def test_make_plugin_can_explicitly_set_all_properties(self):
         plugin = make_plugin(
-            token_manager=dotted_name("StubTokenManager"),
-            nonce_timeout=17,
-            token_timeout="42")
-        self.assertTrue(isinstance(plugin.token_manager, StubTokenManager))
-        self.assertEquals(plugin.nonce_timeout, 17)
-        self.assertEquals(plugin.token_timeout, 42)
-        plugin = make_plugin(
-            token_manager_factory=dotted_name("stub_tm_factory"),
-            nonce_timeout="17",
-            token_timeout=42)
-        self.assertEquals(plugin.token_manager_factory, stub_tm_factory)
-        self.assertEquals(plugin.nonce_timeout, 17)
-        self.assertEquals(plugin.token_timeout, 42)
+            decode_token=dotted_name("stub_decode_token"),
+            nonce_cache="macauthlib:NonceCache")
+        self.assertEquals(plugin.decode_token, stub_decode_token)
+        self.assertTrue(isinstance(plugin.nonce_cache, macauthlib.NonceCache))
 
-    def test_make_plugin_passes_on_args_to_token_manager(self):
+    def test_make_plugin_passes_on_args_to_nonce_cache(self):
         plugin = make_plugin(
-            token_manager=dotted_name("StubTokenManager"),
-            token_manager_secret="BAZINGA")
-        self.assertTrue(isinstance(plugin.token_manager, StubTokenManager))
-        self.assertEquals(plugin.token_manager.secret, "BAZINGA")
+            nonce_cache="macauthlib:NonceCache",
+            nonce_cache_nonce_timeout=42)
+        self.assertTrue(isinstance(plugin.nonce_cache, macauthlib.NonceCache))
+        self.assertEquals(plugin.nonce_cache.nonce_timeout, 42)
         self.assertRaises(TypeError, make_plugin, 
-            token_manager=dotted_name("StubTokenManager"),
-            token_manager_invalid_arg="WHAWHAWHAWHA")
+            nonce_cache="macauthlib:NonceCache",
+            nonce_cache_invalid_arg="WHAWHAWHAWHA")
 
     def test_make_plugin_errors_out_on_unexpected_keyword_args(self):
         self.assertRaises(TypeError, make_plugin,
@@ -143,26 +128,25 @@ class TestMACAuthPlugin(unittest2.TestCase):
 
     def test_make_plugin_errors_out_on_args_to_a_non_callable(self):
         self.assertRaises(ValueError, make_plugin,
-                                      token_manager=dotted_name("unittest2"),
-                                      token_manager_arg="invalidarg")
+                                      nonce_cache=dotted_name("unittest"),
+                                      nonce_cache_arg="invalidarg")
+
+    def test_make_plugin_errors_out_if_decode_token_is_not_callable(self):
+        self.assertRaises(ValueError, make_plugin,
+                                      decode_token=dotted_name("unittest"))
 
     def test_make_plugin_produces_sensible_defaults(self):
         plugin = make_plugin()
-        self.assertTrue(isinstance(plugin.token_manager, TokenManager))
-        self.assertEquals(plugin.token_manager_factory, None)
-        self.assertEquals(plugin.nonce_timeout, 60)
-        self.assertEquals(plugin.token_timeout, plugin.token_manager.timeout)
+        self.assertEquals(plugin.decode_token.im_func,
+                          MACAuthPlugin.decode_token.im_func)
+        self.assertTrue(isinstance(plugin.nonce_cache, macauthlib.NonceCache))
 
-    def test_cant_specify_both_manager_and_factory(self):
-        self.assertRaises(ValueError, MACAuthPlugin,
-                                      token_manager=TokenManager,
-                                      token_manager_factory=stub_tm_factory)
-
-    def test_token_timeout_defaults_to_nonce_timeout(self):
-        token_manager = TokenManager()
-        del token_manager.timeout
-        plugin = MACAuthPlugin(token_manager=token_manager, nonce_timeout=17)
-        self.assertEquals(plugin.nonce_timeout, plugin.token_timeout)
+    def test_make_plugin_curries_args_to_decode_token(self):
+        plugin = make_plugin(
+            decode_token=dotted_name("stub_decode_token"),
+            decode_token_hello="world")
+        self.assertEquals(plugin.decode_token(None, "id")[0], "id")
+        self.assertEquals(plugin.decode_token(None, "id")[1]["hello"], "world")
 
     def test_remember_does_nothing(self):
         self.assertEquals(self.plugin.remember(make_environ(), {}), [])
@@ -188,14 +172,14 @@ class TestMACAuthPlugin(unittest2.TestCase):
     def test_authenticated_request_works(self):
         creds = self._get_credentials(username="test@moz.com")
         req = Request.blank("/")
-        sign_request(req, **creds)
+        macauthlib.sign_request(req, **creds)
         r = self.app.request(req)
         self.assertEquals(r.body, "test@moz.com")
 
     def test_authentication_fails_when_token_has_no_userid(self):
         creds = self._get_credentials(hello="world")
         req = Request.blank("/")
-        sign_request(req, **creds)
+        macauthlib.sign_request(req, **creds)
         r = self.app.request(req, status=401)
 
     def test_authentication_with_non_mac_scheme_fails(self):
@@ -206,7 +190,7 @@ class TestMACAuthPlugin(unittest2.TestCase):
     def test_authentication_without_token_id_fails(self):
         creds = self._get_credentials(username="test@moz.com")
         req = Request.blank("/")
-        sign_request(req, **creds)
+        macauthlib.sign_request(req, **creds)
         authz = req.environ["HTTP_AUTHORIZATION"]
         authz = authz.replace("id", "idd")
         req.environ["HTTP_AUTHORIZATION"] = authz
@@ -215,7 +199,7 @@ class TestMACAuthPlugin(unittest2.TestCase):
     def test_authentication_without_timestamp_fails(self):
         creds = self._get_credentials(username="test@moz.com")
         req = Request.blank("/")
-        sign_request(req, **creds)
+        macauthlib.sign_request(req, **creds)
         authz = req.environ["HTTP_AUTHORIZATION"]
         authz = authz.replace("ts", "typostamp")
         req.environ["HTTP_AUTHORIZATION"] = authz
@@ -224,7 +208,7 @@ class TestMACAuthPlugin(unittest2.TestCase):
     def test_authentication_without_nonce_fails(self):
         creds = self._get_credentials(username="test@moz.com")
         req = Request.blank("/")
-        sign_request(req, **creds)
+        macauthlib.sign_request(req, **creds)
         authz = req.environ["HTTP_AUTHORIZATION"]
         authz = authz.replace("nonce", "typonce")
         req.environ["HTTP_AUTHORIZATION"] = authz
@@ -237,12 +221,12 @@ class TestMACAuthPlugin(unittest2.TestCase):
         # calculate and cache our clock skew.
         ts = str(int(time.time()))
         req.authorization = ("MAC", {"ts": ts})
-        sign_request(req, **creds)
+        macauthlib.sign_request(req, **creds)
         self.app.request(req, status=200)
         # Now do one with a really old timestamp.
         ts = str(int(time.time() - 1000))
         req.authorization = ("MAC", {"ts": ts})
-        sign_request(req, **creds)
+        macauthlib.sign_request(req, **creds)
         self.app.request(req, status=401)
 
     def test_authentication_with_far_future_timestamp_fails(self):
@@ -252,12 +236,12 @@ class TestMACAuthPlugin(unittest2.TestCase):
         # calculate and cache our clock skew.
         ts = str(int(time.time()))
         req.authorization = ("MAC", {"ts": ts})
-        sign_request(req, **creds)
+        macauthlib.sign_request(req, **creds)
         self.app.request(req, status=200)
         # Now do one with a far future timestamp.
         ts = str(int(time.time() + 1000))
         req.authorization = ("MAC", {"ts": ts})
-        sign_request(req, **creds)
+        macauthlib.sign_request(req, **creds)
         self.app.request(req, status=401)
 
     def test_authentication_with_reused_nonce_fails(self):
@@ -265,20 +249,20 @@ class TestMACAuthPlugin(unittest2.TestCase):
         # First request with that nonce should succeed.
         req = Request.blank("/")
         req.authorization = ("MAC", {"nonce": "PEPPER"})
-        sign_request(req, **creds)
+        macauthlib.sign_request(req, **creds)
         r = self.app.request(req)
         self.assertEquals(r.body, "test@moz.com")
         # Second request with that nonce should fail.
         req = Request.blank("/")
         req.authorization = ("MAC", {"nonce": "PEPPER"})
-        sign_request(req, **creds)
+        macauthlib.sign_request(req, **creds)
         self.app.request(req, status=401)
 
     def test_authentication_with_busted_token_fails(self):
         creds = self._get_credentials(username="test@moz.com")
         req = Request.blank("/")
-        sign_request(req, **creds)
-        token = parse_authz_header(req)["id"]
+        macauthlib.sign_request(req, **creds)
+        token = macauthlib.utils.parse_authz_header(req)["id"]
         authz = req.environ["HTTP_AUTHORIZATION"]
         authz = authz.replace(token, "XXX" + token)
         req.environ["HTTP_AUTHORIZATION"] = authz
@@ -287,8 +271,8 @@ class TestMACAuthPlugin(unittest2.TestCase):
     def test_authentication_with_busted_signature_fails(self):
         creds = self._get_credentials(username="test@moz.com")
         req = Request.blank("/")
-        sign_request(req, **creds)
-        signature = parse_authz_header(req)["mac"]
+        macauthlib.sign_request(req, **creds)
+        signature = macauthlib.utils.parse_authz_header(req)["mac"]
         authz = req.environ["HTTP_AUTHORIZATION"]
         authz = authz.replace(signature, "XXX" + signature)
         req.environ["HTTP_AUTHORIZATION"] = authz
@@ -302,13 +286,13 @@ class TestMACAuthPlugin(unittest2.TestCase):
         # Request with valid credentials is allowed access.
         creds = self._get_credentials(username="test@moz.com")
         req = Request.blank("/public")
-        sign_request(req, **creds)
+        macauthlib.sign_request(req, **creds)
         resp = self.app.request(req)
         self.assertEquals(resp.body, "public")
         # Request with invalid credentials gets a 401.
         req = Request.blank("/public")
-        sign_request(req, **creds)
-        signature = parse_authz_header(req)["mac"]
+        macauthlib.sign_request(req, **creds)
+        signature = macauthlib.utils.parse_authz_header(req)["mac"]
         authz = req.environ["HTTP_AUTHORIZATION"]
         authz = authz.replace(signature, "XXX" + signature)
         req.environ["HTTP_AUTHORIZATION"] = authz
@@ -317,24 +301,3 @@ class TestMACAuthPlugin(unittest2.TestCase):
     def test_authenticate_only_accepts_mac_credentials(self):
         # Yes, this is a rather pointless test that boosts line coverage...
         self.assertEquals(self.plugin.authenticate(make_environ(), {}), None)
-
-    def test_token_manager_factory_can_separate_requests_by_host(self):
-        self.plugin.token_manager = None
-        self.plugin.token_manager_factory = stub_tm_factory
-        req1 = Request.blank("/", host="host1.moz.com")
-        creds1 = self._get_credentials(req1, username="test1@moz.com")
-        req2 = Request.blank("/", host="host2.moz.com")
-        creds2 = self._get_credentials(req2, username="test2@moz.com")
-        # Signing req1 with creds2 will not work.
-        sign_request(req1, **creds2)
-        self.app.request(req1, status=401)
-        # Signing req2 with creds1 will not work.
-        sign_request(req2, **creds1)
-        self.app.request(req2, status=401)
-        # But they work using creds for their own host.
-        sign_request(req1, **creds1)
-        resp = self.app.request(req1)
-        self.assertEquals(resp.body, "test1@moz.com")
-        sign_request(req2, **creds2)
-        resp = self.app.request(req2)
-        self.assertEquals(resp.body, "test2@moz.com")

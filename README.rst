@@ -39,5 +39,5 @@ This plugin uses the tokenlib library for verifying MAC credentials:
 
     https://github.com/mozilla-services/tokenlib
 
-You can provide a custom TokenManager instance to customize all details of
-how the credentials are parsed and validated.
+If this library does not meet your needs, you can provide a custom callback
+function to decode the MAC id token.
