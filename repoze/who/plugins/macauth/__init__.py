@@ -42,8 +42,8 @@ class MACAuthPlugin(object):
 
     The plugin can be customized with the following arguments:
 
-        * decode_token:  a callable taking a Request object and MAC id token,
-                         and returning the MAC secret key and user data dict.
+        * decode_mac_id:  a callable taking a Request object and MAC id, and
+                          returning the MAC secret key and user data dict.
 
         * nonce_cache:  an object implementing the same interface as
                         macauthlib.NonceCache.
@@ -52,9 +52,9 @@ class MACAuthPlugin(object):
 
     implements(IIdentifier, IChallenger, IAuthenticator)
 
-    def __init__(self, decode_token=None, nonce_cache=None):
-        if decode_token is not None:
-            self.decode_token = decode_token
+    def __init__(self, decode_mac_id=None, nonce_cache=None):
+        if decode_mac_id is not None:
+            self.decode_mac_id = decode_mac_id
         if nonce_cache is not None:
             self.nonce_cache = nonce_cache
         else:
@@ -78,9 +78,9 @@ class MACAuthPlugin(object):
         id = macauthlib.get_id(request, params=params)
         if id is None:
             return None
-        # Parse the MAC id token into its data and MAC key.
+        # Parse the MAC id into its data and MAC key.
         try:
-            key, data = self.decode_token(request, id)
+            key, data = self.decode_mac_id(request, id)
         except ValueError:
             msg = "invalid MAC id: %s" % (id,)
             return self._respond_unauthorized(request, msg)
@@ -97,7 +97,7 @@ class MACAuthPlugin(object):
 
         The identity must be a set of MAC auth credentials extracted from
         the request.  This method checks the MAC signature, and if valid
-        extracts the user metadata from the token.
+        extracts the user metadata from the MAC id.
         """
         request = Request(environ)
         # Check that these are MAC auth credentials.
@@ -121,7 +121,7 @@ class MACAuthPlugin(object):
             else:
                 msg = "MAC id contains no userid"
                 return self._respond_unauthorized(request, msg)
-        # Update the identity with the data from the token.
+        # Update the identity with the data from the MAC id.
         identity.update(data)
         return identity["repoze.who.userid"]
 
@@ -157,18 +157,18 @@ class MACAuthPlugin(object):
         """
         return [("WWW-Authenticate", "MAC")]
 
-    def decode_token(self, request, token):
-        """Decode MAC id token into MAC key and data dict.
+    def decode_mac_id(self, request, id):
+        """Decode MAC id into MAC key and data dict.
 
-        This method decodes the given MAC id token to give the corresponding
-        MAC secret key and dict of user data.  By default it uses the tokenlib
-        library, which instances may override this method with another callable
-        from the config file.
+        This method decodes the given MAC id to give the corresponding MAC
+        secret key and dict of user data.  By default it uses the tokenlib
+        library, but plugin instances may override this method with another
+        callable from the config file.
 
-        If the token is invalid then ValueError will be raised.
+        If the MAC id is invalid then ValueError will be raised.
         """
-        secret = tokenlib.get_token_secret(token)
-        data = tokenlib.parse_token(token)
+        secret = tokenlib.get_token_secret(id)
+        data = tokenlib.parse_token(id)
         return secret, data
 
     def _check_signature(self, request, secret, params=None):
@@ -194,11 +194,11 @@ def make_plugin(**kwds):
     repoze.who .ini config file system.  It converts its arguments from
     strings to the appropriate type then passes them on to the plugin.
     """
-    decode_token = _load_function_from_kwds("decode_token", kwds)
+    decode_mac_id = _load_function_from_kwds("decode_mac_id", kwds)
     nonce_cache = _load_object_from_kwds("nonce_cache", kwds)
     for unknown_kwd in kwds:
         raise TypeError("unknown keyword argument: %s" % unknown_kwd)
-    plugin = MACAuthPlugin(decode_token, nonce_cache)
+    plugin = MACAuthPlugin(decode_mac_id, nonce_cache)
     return plugin
 
 

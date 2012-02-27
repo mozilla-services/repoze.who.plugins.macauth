@@ -73,11 +73,11 @@ def stub_challenge_decider(environ, status, headers):
     return status.split(None, 1)[0] in ("401", "403")
 
 
-def stub_decode_token(request, token, **extra):
-    """Stub token-decoding function that just returns the token itself."""
-    data = {"userid": token}
+def stub_decode_mac_id(request, id, **extra):
+    """Stub mac-id-decoding function that just returns the id itself."""
+    data = {"userid": id}
     data.update(extra)
-    return token, data
+    return id, data
 
 
 class TestMACAuthPlugin(unittest.TestCase):
@@ -95,9 +95,9 @@ class TestMACAuthPlugin(unittest.TestCase):
         self.app = TestApp(application)
 
     def _get_credentials(self, **data):
-        token = tokenlib.make_token(data)
-        secret = tokenlib.get_token_secret(token)
-        return {"id": token, "key": secret}
+        id = tokenlib.make_token(data)
+        key = tokenlib.get_token_secret(id)
+        return {"id": id, "key": key}
 
     def test_implements(self):
         verifyClass(IIdentifier, MACAuthPlugin)
@@ -106,9 +106,9 @@ class TestMACAuthPlugin(unittest.TestCase):
 
     def test_make_plugin_can_explicitly_set_all_properties(self):
         plugin = make_plugin(
-            decode_token=dotted_name("stub_decode_token"),
+            decode_mac_id=dotted_name("stub_decode_mac_id"),
             nonce_cache="macauthlib:NonceCache")
-        self.assertEquals(plugin.decode_token, stub_decode_token)
+        self.assertEquals(plugin.decode_mac_id, stub_decode_mac_id)
         self.assertTrue(isinstance(plugin.nonce_cache, macauthlib.NonceCache))
 
     def test_make_plugin_passes_on_args_to_nonce_cache(self):
@@ -130,22 +130,22 @@ class TestMACAuthPlugin(unittest.TestCase):
                                       nonce_cache=dotted_name("unittest"),
                                       nonce_cache_arg="invalidarg")
 
-    def test_make_plugin_errors_out_if_decode_token_is_not_callable(self):
+    def test_make_plugin_errors_out_if_decode_mac_id_is_not_callable(self):
         self.assertRaises(ValueError, make_plugin,
-                                      decode_token=dotted_name("unittest"))
+                                      decode_mac_id=dotted_name("unittest"))
 
     def test_make_plugin_produces_sensible_defaults(self):
         plugin = make_plugin()
-        self.assertEquals(plugin.decode_token.im_func,
-                          MACAuthPlugin.decode_token.im_func)
+        self.assertEquals(plugin.decode_mac_id.im_func,
+                          MACAuthPlugin.decode_mac_id.im_func)
         self.assertTrue(isinstance(plugin.nonce_cache, macauthlib.NonceCache))
 
-    def test_make_plugin_curries_args_to_decode_token(self):
+    def test_make_plugin_curries_args_to_decode_mac_id(self):
         plugin = make_plugin(
-            decode_token=dotted_name("stub_decode_token"),
-            decode_token_hello="world")
-        self.assertEquals(plugin.decode_token(None, "id")[0], "id")
-        self.assertEquals(plugin.decode_token(None, "id")[1]["hello"], "world")
+            decode_mac_id=dotted_name("stub_decode_mac_id"),
+            decode_mac_id_hello="hi")
+        self.assertEquals(plugin.decode_mac_id(None, "id")[0], "id")
+        self.assertEquals(plugin.decode_mac_id(None, "id")[1]["hello"], "hi")
 
     def test_remember_does_nothing(self):
         self.assertEquals(self.plugin.remember(make_environ(), {}), [])
@@ -175,7 +175,7 @@ class TestMACAuthPlugin(unittest.TestCase):
         r = self.app.request(req)
         self.assertEquals(r.body, "test@moz.com")
 
-    def test_authentication_fails_when_token_has_no_userid(self):
+    def test_authentication_fails_when_macid_has_no_userid(self):
         creds = self._get_credentials(hello="world")
         req = Request.blank("/")
         macauthlib.sign_request(req, **creds)
@@ -186,7 +186,7 @@ class TestMACAuthPlugin(unittest.TestCase):
         req.authorization = "OpenID hello=world"
         self.app.request(req, status=401)
 
-    def test_authentication_without_token_id_fails(self):
+    def test_authentication_without_macid_fails(self):
         creds = self._get_credentials(username="test@moz.com")
         req = Request.blank("/")
         macauthlib.sign_request(req, **creds)
@@ -257,13 +257,13 @@ class TestMACAuthPlugin(unittest.TestCase):
         macauthlib.sign_request(req, **creds)
         self.app.request(req, status=401)
 
-    def test_authentication_with_busted_token_fails(self):
+    def test_authentication_with_busted_macid_fails(self):
         creds = self._get_credentials(username="test@moz.com")
         req = Request.blank("/")
         macauthlib.sign_request(req, **creds)
-        token = macauthlib.utils.parse_authz_header(req)["id"]
+        id = macauthlib.utils.parse_authz_header(req)["id"]
         authz = req.environ["HTTP_AUTHORIZATION"]
-        authz = authz.replace(token, "XXX" + token)
+        authz = authz.replace(id, "XXX" + id)
         req.environ["HTTP_AUTHORIZATION"] = authz
         self.app.request(req, status=401)
 
